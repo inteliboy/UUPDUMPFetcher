@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 inteliboy
+Copyright (c) 2026 UUP Dump Fetcher contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,10 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+This license applies to the original source code of this project (the C#
+files and build scripts in this repository). It does NOT apply to third-party
+components distributed alongside it, which retain their own licenses - see
+THIRD-PARTY-LICENSES.md.
