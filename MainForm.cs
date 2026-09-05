@@ -41,6 +41,17 @@ namespace UupDumpFetcher
         Button      _btnStart, _btnStop;
         TabControl  _tabs;
         TabPage     _tabFetch, _tabSettings;
+        Panel       _tabRowFill;   // covers the native light strip right of the last tab
+        Panel       _tabFrameTop, _tabFrameBottom;  // cover TabAppearance.Normal's light notebook-frame border
+        Panel       _tabFrameLeft, _tabFrameRight;  // same frame border, left/right edges
+        Panel       _tabGroupTop;   // FlatButtons' own button-group outline, top edge
+        Panel       _tabInterGapFill;  // gap FlatButtons leaves between adjacent tab buttons
+        // _cmbArch's own FlatStyle.Flat border/dropdown-button chrome always
+        // renders a fixed light gray regardless of theme (same native-quirk
+        // class as TextBox's FixedSingle border) - these cover it, dark mode
+        // only (see ApplyTheme). _archButtonFace also owner-paints its own
+        // dropdown arrow glyph, since it fully covers the native one.
+        Panel       _archBorderLeft, _archBorderTop, _archBorderBottom, _archButtonFace;
 
         // Worker state
         bool             _busy;
@@ -165,13 +176,49 @@ namespace UupDumpFetcher
 
             _tabs         = new TabControl();
             _tabs.Dock    = DockStyle.Fill;
+            // Padding only pads the measured ItemSize below (extra breathing
+            // room around each tab's text) - it does NOT affect centering,
+            // since DrawTab always centers text within GetTabRect(index),
+            // the tab's own real rectangle, regardless of this value.
             _tabs.Padding = new Point(18, 7);
             _tabs.Font    = Ctrl.SegoUI();
+            // Native TabControl always paints its tab strip via visual
+            // styles - light/white regardless of BackColor/ForeColor.
+            // OwnerDrawFixed + DrawTab paints each real tab's own rectangle
+            // to match Theme. FlatButtons vs Normal: see CLAUDE.md's "Visual
+            // overhaul" section for the full live-tested history - Normal
+            // draws each tab as a bordered notebook-tab shape (a persistent
+            // light outline around every tab that OwnerDraw doesn't reach,
+            // since it only paints inside e.Bounds, not the native border
+            // decoration around it) and its own light frame border around
+            // the whole page area; FlatButtons drops both, at the cost of a
+            // light strip in the tab row that needed the _tabRowFill/
+            // _tabFrame* overlay panels below regardless of which Appearance
+            // is used - now that those exist, FlatButtons is the better
+            // choice since it needs no fighting with the native tab-shape
+            // border at all.
+            _tabs.Appearance = TabAppearance.FlatButtons;
+            _tabs.DrawMode   = TabDrawMode.OwnerDrawFixed;
+            _tabs.DrawItem  += DrawTab;
 
-            _tabFetch    = new TabPage("  Fetch  ");
-            _tabSettings = new TabPage("  Settings  ");
+            // Fixed, measured width for every tab - SizeMode.Normal (the
+            // default) auto-sizes each tab to its own text, so "Settings"
+            // (8 chars) renders visibly wider than "Fetch" (5 chars).
+            // Measured from the actual longer label rather than a
+            // hand-picked constant (DrawTab already centers text within
+            // whatever bounds the control gives each tab regardless of
+            // SizeMode, so this only changes sizing, not painting).
+            Size fetchSz    = TextRenderer.MeasureText("Fetch", _tabs.Font);
+            Size settingsSz = TextRenderer.MeasureText("Settings", _tabs.Font);
+            int tabTextW = Math.Max(fetchSz.Width, settingsSz.Width);
+            _tabs.SizeMode = TabSizeMode.Fixed;
+            _tabs.ItemSize = new Size(tabTextW + _tabs.Padding.X * 2, fetchSz.Height + _tabs.Padding.Y * 2);
+
+            _tabFetch    = new TabPage("Fetch");
+            _tabSettings = new TabPage("Settings");
             _tabs.TabPages.Add(_tabFetch);
             _tabs.TabPages.Add(_tabSettings);
+
 
             // Status bar at the bottom - use TableLayoutPanel to avoid
             // z-order/Dock conflicts that hid the progress bar previously.
@@ -229,6 +276,171 @@ namespace UupDumpFetcher
             Controls.Add(topBar);
             Controls.Add(statusBar);
 
+            // The strip to the right of the last real tab, within the same
+            // row, is native-painted by the TabControl regardless of
+            // BackColor and regardless of NativeMethods.DisableVisualStyles
+            // (tried both, pixel-checked a real screenshot each time - still
+            // R=G=B=240 either way). A control added directly to
+            // _tabs.Controls (rather than to one of its TabPages) never
+            // renders at all - verified live with an oversized bright-red
+            // debug rectangle that simply never appeared no matter what.
+            // Fix: a plain Panel added as a *sibling* of _tabs (a child of
+            // this Form, added after _tabs so it paints on top), positioned
+            // in the Form's own coordinate space via _tabs.Location + the
+            // real tab rect - ordinary sibling z-ordering works completely
+            // normally here, unlike TabControl's own child handling.
+            _tabRowFill = new Panel();
+            _tabRowFill.BackColor = Theme.Bg;
+            Controls.Add(_tabRowFill);
+            _tabRowFill.BringToFront();
+
+            // TabAppearance.Normal also draws its own light "notebook frame"
+            // border around the whole page area - a thin (2px) full-width
+            // line immediately below the tab row, and another one near the
+            // bottom of the TabControl's own client area. Missed on the
+            // first verification pass because that only spot-checked pixels
+            // every 20px vertically, which happened to step over both of
+            // these - caught only by a full row-by-row scan of a real
+            // screenshot (a general lesson: a coarse pixel-check grid can
+            // walk right past a thin border the same way eyeballing can).
+            _tabFrameTop = new Panel();
+            _tabFrameTop.BackColor = Theme.Bg;
+            Controls.Add(_tabFrameTop);
+            _tabFrameTop.BringToFront();
+
+            _tabFrameBottom = new Panel();
+            _tabFrameBottom.BackColor = Theme.Bg;
+            Controls.Add(_tabFrameBottom);
+            _tabFrameBottom.BringToFront();
+
+            // Same notebook-frame border, left/right edges this time - found
+            // by extending the verification scanner to check columns as well
+            // as rows after the user reported these specifically (the row
+            // scan alone had no way to reveal a vertical line).
+            _tabFrameLeft = new Panel();
+            _tabFrameLeft.BackColor = Theme.Bg;
+            Controls.Add(_tabFrameLeft);
+            _tabFrameLeft.BringToFront();
+
+            _tabFrameRight = new Panel();
+            _tabFrameRight.BackColor = Theme.Bg;
+            Controls.Add(_tabFrameRight);
+            _tabFrameRight.BringToFront();
+
+            // FlatButtons' button-group outline's top edge - only actually
+            // visible over an *unselected* tab (the selected tab's own
+            // DrawTab fill happens to already cover it there), found by
+            // re-scanning yet again after the left/right/bottom fixes above
+            // and seeing a new short span appear specifically over
+            // "Settings", not "Fetch".
+            _tabGroupTop = new Panel();
+            _tabGroupTop.BackColor = Theme.Bg;
+            Controls.Add(_tabGroupTop);
+            _tabGroupTop.BringToFront();
+
+            // FlatButtons also leaves a visible gap *between* adjacent tab
+            // buttons (found via a direct per-pixel region scan, not the
+            // find_light.exe row/column heuristic - that tool's column pass
+            // missed this because the same column also crosses the unrelated
+            // TextBox border further down the form, which diluted its
+            // density-over-full-column-span check below threshold even
+            // though the two are separate defects. Lesson: a "wide span,
+            // high density" heuristic can hide a real short defect if an
+            // unrelated defect elsewhere in the same column/row lowers the
+            // overall density - when a heuristic scan comes back clean but
+            // something still looks visually wrong, re-check with a raw,
+            // unfiltered per-pixel dump of just the suspect region instead of
+            // trusting the heuristic's negative result.
+            _tabInterGapFill = new Panel();
+            _tabInterGapFill.BackColor = Theme.Bg;
+            Controls.Add(_tabInterGapFill);
+            _tabInterGapFill.BringToFront();
+
+            Action layoutTabRowFill = delegate()
+            {
+                if (_tabs.TabCount == 0) return;
+                Rectangle lastTabRect = _tabs.GetTabRect(_tabs.TabCount - 1);
+                // Cover from _tabs.Top directly (not _tabs.Top + lastTabRect.Top)
+                // down through lastTabRect.Bottom - GetTabRect's own small top
+                // offset (a couple px of padding above the tab text) otherwise
+                // leaves a thin sliver of the native light strip uncovered at
+                // the very top of the row, found by pixel-checking a real
+                // screenshot row-by-row rather than assuming one check at the
+                // rect's own bounds was enough.
+                // A few px earlier than lastTabRect.Right itself - same kind
+                // of small boundary-offset margin as _tabFrameTop's Y below,
+                // found the same way (a real screenshot still showed a thin
+                // sliver at x=198-199 with this starting exactly at
+                // lastTabRect.Right and no margin).
+                _tabRowFill.Location = new Point(_tabs.Left + lastTabRect.Right - 3, _tabs.Top);
+                _tabRowFill.Size = new Size(Math.Max(0, _tabs.Width - lastTabRect.Right + 3), lastTabRect.Bottom);
+
+                // The gap FlatButtons leaves *between* adjacent tab buttons -
+                // only covers one gap (assumes exactly 2 tabs, Fetch and
+                // Settings, which is all this app has; extend to loop over
+                // every adjacent pair if a third tab is ever added).
+                if (_tabs.TabCount >= 2)
+                {
+                    Rectangle firstTabRect = _tabs.GetTabRect(0);
+                    Rectangle secondTabRect = _tabs.GetTabRect(1);
+                    _tabInterGapFill.Location = new Point(
+                        _tabs.Left + firstTabRect.Right - 2, _tabs.Top);
+                    _tabInterGapFill.Size = new Size(
+                        Math.Max(0, secondTabRect.Left - firstTabRect.Right + 4), lastTabRect.Bottom);
+                }
+
+                // Starts 3px above the tab row's own reported bottom edge -
+                // confirmed live (a same-process GetTabRect+screenshot cross-
+                // check, see DrawTab's comment) that a real native page-frame
+                // highlight line sits right at this boundary REGARDLESS of
+                // owner-draw or tab selection (present under both Fetch and
+                // Settings alike, at the identical row, well before this
+                // panel even existed) - not a gap left by owner-draw
+                // painting short of GetTabRect's bottom, which was this
+                // comment's earlier (wrong) theory: e.Bounds only insets
+                // ~2px from GetTabRect (the ordinary owner-draw content
+                // margin), nowhere near enough to explain a 7px-tall native
+                // line. Reverted back to -3 after moving it to 0 (matching
+                // the wrong theory) reintroduced that native line as a real
+                // visible defect. Trade-off, confirmed acceptable: this
+                // means the panel also covers the last ~2px of the tab's own
+                // accent underline (drawn at bounds.Bottom-1/-2, the same
+                // rows the native line occupies) - hiding a real, previously-
+                // fixed defect matters more than showing the underline.
+                _tabFrameTop.Location = new Point(_tabs.Left, _tabs.Top + lastTabRect.Bottom - 3);
+                _tabFrameTop.Size = new Size(_tabs.Width, 7);
+
+                // Sits well above where any tab's own text starts (Padding.Y
+                // = 7, so labels begin ~7px down) - safe across the full
+                // width including over "Fetch", where it just harmlessly
+                // overlaps that tab's own already-dark fill.
+                _tabGroupTop.Location = new Point(_tabs.Left, _tabs.Top);
+                _tabGroupTop.Size = new Size(_tabs.Width, 4);
+
+                _tabFrameBottom.Location = new Point(_tabs.Left, _tabs.Bottom - 6);
+                _tabFrameBottom.Size = new Size(_tabs.Width, 6);
+
+                // Left/right edges of the same frame - found at ~8-11px and
+                // ~11px in from the control's own left/right edges
+                // respectively (a real screenshot scan, not assumed); 14px
+                // covers both with margin. Spans the FULL _tabs.Height,
+                // including the tab-row itself - FlatButtons' button-group
+                // outline (see _tabFrameTop's own comment) runs along the
+                // left/right edges of the tab row too, not just below it.
+                // Safe to cover that high up despite real tab labels sitting
+                // in the same row: _tabs.Padding insets every tab's own text
+                // 18px from that tab's edge, and the first tab starts at
+                // x~0-4, so a 14px-wide strip from the control's own left
+                // edge never reaches an actual glyph.
+                _tabFrameLeft.Location = new Point(_tabs.Left, _tabs.Top);
+                _tabFrameLeft.Size = new Size(4, _tabs.Height);
+
+                _tabFrameRight.Location = new Point(_tabs.Right - 4, _tabs.Top);
+                _tabFrameRight.Size = new Size(4, _tabs.Height);
+            };
+            layoutTabRowFill();
+            _tabs.Resize += delegate(object s, EventArgs e) { layoutTabRowFill(); };
+
             BuildFetchTab();
             BuildSettingsTab();
         }
@@ -282,9 +494,7 @@ namespace UupDumpFetcher
 
             _tbBuild = Ctrl.MakeEntry();
             _tbBuild.Height = 24;
-            _tbBuild.BorderStyle = Theme.IsDark
-                ? BorderStyle.FixedSingle : BorderStyle.Fixed3D;
-            Add(_tbBuild);
+            Add(Ctrl.Bordered(_tbBuild));
 
             y += 4;
             Label lblArch = Ctrl.MakeLabel("Architecture  (manual build only)", true);
@@ -297,12 +507,67 @@ namespace UupDumpFetcher
             _cmbArch.BackColor     = Theme.IsDark ? Theme.EntryBg : SystemColors.Window;
             _cmbArch.ForeColor     = Theme.IsDark ? Theme.EntryFg : SystemColors.WindowText;
             _cmbArch.FlatStyle     = Theme.IsDark ? FlatStyle.Flat : FlatStyle.Standard;
+            // BackColor/ForeColor only theme the closed display portion - the
+            // dropdown list popup (what actually shows "amd64 + arm64" /
+            // "amd64 only" / "arm64 only" when clicked) is a separate native
+            // listbox that Windows always renders with its own default
+            // white/black colors regardless, the same class of "native
+            // control ignores BackColor for one specific part of itself"
+            // problem TabControl's header/frame had. OwnerDrawFixed +
+            // DrawItem (DrawComboItem) is the fix, same technique as DrawTab.
+            _cmbArch.DrawMode = DrawMode.OwnerDrawFixed;
+            _cmbArch.DrawItem += DrawComboItem;
             _cmbArch.Items.Add("amd64 + arm64");
             _cmbArch.Items.Add("amd64 only");
             _cmbArch.Items.Add("arm64 only");
             _cmbArch.SelectedIndex = 0;
             _cmbArch.Enabled       = false;   // enabled only when build is specified
             Add(_cmbArch);
+
+            // Cover _cmbArch's own native FlatStyle.Flat chrome - confirmed
+            // live via pixel-check that it renders a fixed light gray
+            // (240,240,240) border (~3px on left/top/bottom) AND the entire
+            // dropdown-button face (the rightmost ~20px, arrow glyph
+            // included) regardless of BackColor/ForeColor, the same native-
+            // quirk class as TextBox's FixedSingle border. DrawComboItem
+            // (DrawMode.OwnerDrawFixed) only paints the closed box's own
+            // text area (e.Index == -1) and each open-list row - it never
+            // touches this surrounding chrome. Sized from _cmbArch's own
+            // real Bounds/PreferredHeight (not the 24 assigned above, which
+            // - like TextBox.Height - is silently overridden by Windows to
+            // the font's natural combo height) so this stays correct if the
+            // font ever changes; the 3px/20px thicknesses themselves are
+            // empirical (measured via a live pixel-scan across the real
+            // border and button-face extent), not computable from any
+            // ComboBox property.
+            _archBorderLeft = new Panel();
+            _archBorderTop = new Panel();
+            _archBorderBottom = new Panel();
+            _archButtonFace = new Panel();
+            left.Controls.Add(_archBorderLeft);
+            left.Controls.Add(_archBorderTop);
+            left.Controls.Add(_archBorderBottom);
+            left.Controls.Add(_archButtonFace);
+            int archH = _cmbArch.PreferredHeight;
+            _archBorderLeft.Bounds = new Rectangle(_cmbArch.Left, _cmbArch.Top, 3, archH);
+            _archBorderTop.Bounds = new Rectangle(_cmbArch.Left, _cmbArch.Top, _cmbArch.Width, 3);
+            _archBorderBottom.Bounds = new Rectangle(_cmbArch.Left, _cmbArch.Top + archH - 3, _cmbArch.Width, 3);
+            _archButtonFace.Bounds = new Rectangle(_cmbArch.Left + _cmbArch.Width - 20, _cmbArch.Top, 20, archH);
+            _archButtonFace.Paint += delegate(object s, PaintEventArgs e)
+            {
+                using (SolidBrush b = new SolidBrush(Theme.FgDim))
+                {
+                    int cx = _archButtonFace.Width / 2, cy = _archButtonFace.Height / 2;
+                    Point[] tri = new Point[] {
+                        new Point(cx - 4, cy - 2), new Point(cx + 4, cy - 2), new Point(cx, cy + 3)
+                    };
+                    e.Graphics.FillPolygon(b, tri);
+                }
+            };
+            _archBorderLeft.BringToFront();
+            _archBorderTop.BringToFront();
+            _archBorderBottom.BringToFront();
+            _archButtonFace.BringToFront();
 
             // Enable/disable arch selector based on whether a build is typed
             _tbBuild.TextChanged += delegate(object s, EventArgs e)
@@ -383,8 +648,9 @@ namespace UupDumpFetcher
             ddRow.Dock = DockStyle.Fill; ddRow.Height = 26;
             _tbDownloadDir = Ctrl.MakeEntry();
             _tbDownloadDir.Text   = Paths.DownloadDir;
-            _tbDownloadDir.Dock   = DockStyle.Fill;
             _tbDownloadDir.Height = 24;
+            Panel tbDownloadDirWrap = Ctrl.Bordered(_tbDownloadDir);
+            tbDownloadDirWrap.Dock = DockStyle.Fill;
 
             Button btnBrowseDl = new Button();
             btnBrowseDl.Text      = "..."; btnBrowseDl.Width = 34;
@@ -399,7 +665,7 @@ namespace UupDumpFetcher
                 if (dlg.ShowDialog(this) == DialogResult.OK)
                     _tbDownloadDir.Text = dlg.SelectedPath;
             };
-            ddRow.Controls.Add(_tbDownloadDir);
+            ddRow.Controls.Add(tbDownloadDirWrap);
             ddRow.Controls.Add(btnBrowseDl);
             AddSettingRow(tl, "Download destination", ddRow, 0);
 
@@ -408,8 +674,9 @@ namespace UupDumpFetcher
             destRow.Dock = DockStyle.Fill; destRow.Height = 26;
             _tbUploadDest = Ctrl.MakeEntry();
             _tbUploadDest.Text   = AppConfig.UploadDest;
-            _tbUploadDest.Dock   = DockStyle.Fill;
             _tbUploadDest.Height = 24;
+            Panel tbUploadDestWrap = Ctrl.Bordered(_tbUploadDest);
+            tbUploadDestWrap.Dock = DockStyle.Fill;
 
             Button btnBrowse = new Button();
             btnBrowse.Text      = "..."; btnBrowse.Width = 34;
@@ -424,14 +691,15 @@ namespace UupDumpFetcher
                 if (dlg.ShowDialog(this) == DialogResult.OK)
                     _tbUploadDest.Text = dlg.SelectedPath;
             };
-            destRow.Controls.Add(_tbUploadDest);
+            destRow.Controls.Add(tbUploadDestWrap);
             destRow.Controls.Add(btnBrowse);
 
             AddSettingRow(tl, "Upload destination\n(e.g. Z:\\ or \\\\server\\share)", destRow, 1);
 
             _tbUserAgent      = Ctrl.MakeEntry();
             _tbUserAgent.Text = AppConfig.UserAgent;
-            AddSettingRow(tl, "Browser user-agent", _tbUserAgent, 2);
+            _tbUserAgent.Height = 24;
+            AddSettingRow(tl, "Browser user-agent", Ctrl.Bordered(_tbUserAgent), 2);
 
             Panel sep1 = new Panel();
             sep1.Height = 1; sep1.BackColor = Theme.Border;
@@ -527,7 +795,18 @@ namespace UupDumpFetcher
         void AddSettingRow(TableLayoutPanel tl, string label, Control ctl, int row)
         {
             tl.Controls.Add(Ctrl.MakeLabel(label, true), 0, row);
-            ctl.Dock = DockStyle.Fill; ctl.Margin = new Padding(18, 4, 0, 4);
+            // Anchor (stretches width, keeps ctl's own explicit Height),
+            // not Dock.Fill (stretches both dimensions to the row's full
+            // AutoSize height) - the Upload destination row's label wraps
+            // to two lines, making that row's AutoSize height taller than
+            // the single-line Download destination row above it; with
+            // Dock.Fill each row's "..." browse button silently inherited
+            // its own row's full height, so the two ended up visibly
+            // different sizes (confirmed live: Height=26 vs Height=32 for
+            // otherwise-identical buttons) even though both explicitly set
+            // Height=26 on their own row Panel.
+            ctl.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            ctl.Margin = new Padding(18, 4, 0, 4);
             tl.Controls.Add(ctl, 1, row);
         }
 
@@ -535,7 +814,43 @@ namespace UupDumpFetcher
         void ApplyTheme()
         {
             BackColor = Theme.Bg;
+            // TabControl paints its own background (the strip of space
+            // around/below the tab headers, outside any individual TabPage)
+            // separately from every TabPage's own BackColor - left at its
+            // ambient default this shows up as a thin light-gray gap right
+            // under the tab headers even with owner-draw tabs.
+            _tabs.BackColor = Theme.Bg;
             foreach (TabPage tp in _tabs.TabPages) tp.BackColor = Theme.Bg;
+            if (_tabRowFill != null) _tabRowFill.BackColor = Theme.Bg;
+            if (_tabFrameTop != null) _tabFrameTop.BackColor = Theme.Bg;
+            if (_tabFrameBottom != null) _tabFrameBottom.BackColor = Theme.Bg;
+            if (_tabFrameLeft != null) _tabFrameLeft.BackColor = Theme.Bg;
+            if (_tabFrameRight != null) _tabFrameRight.BackColor = Theme.Bg;
+            if (_tabGroupTop != null) _tabGroupTop.BackColor = Theme.Bg;
+            if (_tabInterGapFill != null) _tabInterGapFill.BackColor = Theme.Bg;
+            // Only needed in dark mode - _cmbArch's FlatStyle.Standard in
+            // light mode renders a normal native border with no defect to
+            // cover (see _cmbArch's own construction comment).
+            if (_archBorderLeft != null)
+            {
+                _archBorderLeft.Visible = _archBorderTop.Visible =
+                    _archBorderBottom.Visible = _archButtonFace.Visible = Theme.IsDark;
+                _archBorderLeft.BackColor = _archBorderTop.BackColor =
+                    _archBorderBottom.BackColor = Theme.Border;
+                _archButtonFace.BackColor = Theme.EntryBg;
+                _archButtonFace.Invalidate();
+            }
+            // Accessing .Handle forces the native window to exist now, so
+            // this is safe to call before the form is ever shown (same
+            // "force creation" pattern as EnableDarkScrollBar elsewhere).
+            NativeMethods.SetDarkTitleBar(Handle, Theme.IsDark);
+            // Immersive dark mode alone only covers the caption background/
+            // text/buttons - Windows 11 draws a separate thin border around
+            // the whole window that stays the system default color unless
+            // set explicitly (see SetBorderAndCaptionColor's own comment).
+            NativeMethods.SetBorderAndCaptionColor(Handle,
+                Theme.IsDark ? Theme.Border  : Color.Empty,
+                Theme.IsDark ? Theme.Surface : Color.Empty);
             if (_logBox != null)
             {
                 _logBox.BackColor = Theme.LogBg;
@@ -558,16 +873,22 @@ namespace UupDumpFetcher
                 {
                     if (Theme.IsDark)
                     {
-                        tb.BackColor   = Theme.EntryBg;
-                        tb.ForeColor   = Theme.EntryFg;
-                        tb.BorderStyle = BorderStyle.FixedSingle;
+                        tb.BackColor = Theme.EntryBg;
+                        tb.ForeColor = Theme.EntryFg;
                     }
                     else
                     {
-                        tb.BackColor   = SystemColors.Window;
-                        tb.ForeColor   = SystemColors.WindowText;
-                        tb.BorderStyle = BorderStyle.Fixed3D;
+                        tb.BackColor = SystemColors.Window;
+                        tb.ForeColor = SystemColors.WindowText;
                     }
+                    // BorderStyle.FixedSingle can't be recolored - every
+                    // MakeEntry() TextBox is wrapped in a Ctrl.Bordered()
+                    // panel that owns BorderStyle instead (see its comment).
+                    Panel wrapper = tb.Parent as Panel;
+                    if (wrapper != null && wrapper.Controls.Count == 1 && wrapper.Controls[0] == tb)
+                        Ctrl.RestyleBordered(wrapper);
+                    else
+                        tb.BorderStyle = Theme.IsDark ? BorderStyle.FixedSingle : BorderStyle.Fixed3D;
                 }
                 ComboBox cb = c as ComboBox;
                 if (cb != null && !(c is RichTextBox))
@@ -897,15 +1218,93 @@ namespace UupDumpFetcher
             Logger.Log("Settings saved. Download dir: " + Paths.DownloadDir);
         }
 
-        // One cell of the per-build file grid in ShowState.
-        static Label MakeGridCell(string text, bool header)
+        // Owner-draws one tab header for _tabs (see its own comment for why
+        // this replaces the native tab strip instead of just recoloring it).
+        void DrawTab(object sender, DrawItemEventArgs e)
         {
-            Label c = new Label();
+            TabControl tc = (TabControl)sender;
+            TabPage page = tc.TabPages[e.Index];
+            bool selected = e.Index == tc.SelectedIndex;
+
+            // GetTabRect(e.Index), not e.Bounds - a live same-process check
+            // (reflection-queried GetTabRect + a debug log of e.Bounds from
+            // inside this very method) showed e.Bounds is only inset ~2px
+            // from GetTabRect (e.g. GetTabRect={X=2,Y=0,W=90,H=31} vs
+            // e.Bounds={X=4,Y=2,W=86,H=27} for the same tab) - the normal,
+            // documented owner-draw content margin, not a real bug. Using
+            // GetTabRect here is harmless/slightly more complete but was NOT
+            // what fixed the "tab text alignment looks off" complaint.
+            //
+            // The actual cause (found via a pixel grid-dump of a live
+            // screenshot cross-referenced against GetTabRect+ClientToScreen):
+            // _tabFrameLeft's overlay panel (below) used a hardcoded 14px
+            // width measured against the OLD, narrower tab geometry from
+            // earlier in this session - once _tabs.Padding was restored to
+            // its intended Point(18,7) (widening each tab to 90px), that same
+            // 14px cover was eating a real ~12px chunk out of the FIRST tab's
+            // own left edge, painting it Theme.Bg over what should have been
+            // its selected Theme.Surface fill. The tab's text itself sat
+            // safely past that point (Padding.X=18 insets it well clear) so
+            // it looked correctly centered on its own - it was the visibly
+            // truncated fill block next to it that read as "misaligned".
+            // Fixed by shrinking _tabFrameLeft/_tabFrameRight to 4px, which
+            // still covers the real native artifact they exist for (verified:
+            // no light sliver reappeared) without reaching into real tab fill.
+            Rectangle bounds = tc.GetTabRect(e.Index);
+
+            using (SolidBrush bg = new SolidBrush(selected ? Theme.Surface : Theme.Bg))
+                e.Graphics.FillRectangle(bg, bounds);
+            if (selected)
+                using (Pen p = new Pen(Theme.Accent, 2))
+                    e.Graphics.DrawLine(p, bounds.Left, bounds.Bottom - 1, bounds.Right, bounds.Bottom - 1);
+
+            using (StringFormat sf = new StringFormat())
+            {
+                sf.Alignment = StringAlignment.Center;
+                sf.LineAlignment = StringAlignment.Center;
+                using (SolidBrush fg = new SolidBrush(selected ? Theme.Fg : Theme.FgDim))
+                    e.Graphics.DrawString(page.Text.Trim(), tc.Font, fg, bounds, sf);
+            }
+        }
+
+        // Owner-draws one item of _cmbArch, both the closed display box
+        // (e.Index == -1 there is possible before any selection, hence the
+        // guard) and each row of the open dropdown list - see the comment at
+        // _cmbArch's construction for why this is needed at all.
+        void DrawComboItem(object sender, DrawItemEventArgs e)
+        {
+            ComboBox cb = (ComboBox)sender;
+            e.DrawBackground();
+            if (e.Index < 0) return;
+
+            bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+            Color bg = selected
+                ? (Theme.IsDark ? Theme.SelBg : SystemColors.Highlight)
+                : (Theme.IsDark ? Theme.EntryBg : SystemColors.Window);
+            Color fg = selected
+                ? (Theme.IsDark ? Theme.EntryFg : SystemColors.HighlightText)
+                : (Theme.IsDark ? Theme.EntryFg : SystemColors.WindowText);
+
+            using (SolidBrush b = new SolidBrush(bg))
+                e.Graphics.FillRectangle(b, e.Bounds);
+            TextRenderer.DrawText(e.Graphics, cb.Items[e.Index].ToString(), cb.Font, e.Bounds,
+                fg, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+            e.DrawFocusRectangle();
+        }
+
+        // One cell of the per-build file grid in ShowState. A read-only
+        // TextBox rather than a Label - looks the same (no border, matching
+        // background) but lets the user select and copy a name/checksum,
+        // which a Label can never support.
+        static TextBox MakeGridCell(string text, bool header)
+        {
+            TextBox c = new TextBox();
             c.Text        = text;
+            c.ReadOnly    = true;
+            c.TabStop     = false;
+            c.BorderStyle = BorderStyle.None;
             c.Dock        = DockStyle.Fill;
-            c.AutoEllipsis = true;
-            c.Padding     = new Padding(6, 0, 6, 0);
-            c.TextAlign   = ContentAlignment.MiddleLeft;
+            c.Margin      = new Padding(6, 3, 6, 0);
             c.Font        = header ? Ctrl.SegoUI(8.25f, FontStyle.Bold) : new Font("Consolas", 8f);
             c.ForeColor   = header ? Theme.FgDim : Theme.Fg;
             c.BackColor   = header ? Theme.Bg : Theme.Surface;
@@ -983,23 +1382,43 @@ namespace UupDumpFetcher
                     completed.Location = new Point(10, 30);
                     row.Controls.Add(completed);
 
-                    int y = 52;
+                    int collapsedHeight;
+                    int expandedHeight;
+                    TableLayoutPanel fileTable = null;
+                    Label toggle = null;
+
                     if (rec.files.Count == 0)
                     {
                         Label none = Ctrl.MakeLabel("(no processed files recorded)", true, 8.5f);
-                        none.Location = new Point(10, y);
+                        none.Location = new Point(10, 52);
                         row.Controls.Add(none);
-                        y += 18;
+                        collapsedHeight = 52 + 18 + 10;
+                        expandedHeight  = collapsedHeight;
                     }
                     else
                     {
-                        TableLayoutPanel fileTable = new TableLayoutPanel();
-                        fileTable.Location        = new Point(10, y);
+                        // Collapsed by default so a long list of builds
+                        // doesn't take excessive vertical space - the file
+                        // grid (with its checksums) is the least-often-needed
+                        // detail, shown only on request.
+                        toggle = new Label();
+                        toggle.Text      = "▸ " + rec.files.Count + " file(s)";
+                        toggle.AutoSize  = true;
+                        toggle.Font      = Ctrl.SegoUI(8.5f);
+                        toggle.ForeColor = Theme.Accent;
+                        toggle.BackColor = Color.Transparent;
+                        toggle.Cursor    = Cursors.Hand;
+                        toggle.Location  = new Point(10, 52);
+                        row.Controls.Add(toggle);
+
+                        fileTable = new TableLayoutPanel();
+                        fileTable.Location        = new Point(10, 76);
                         fileTable.Size            = new Size(colName + colMd5 + colSha, rowH * (rec.files.Count + 1));
                         fileTable.ColumnCount      = 3;
                         fileTable.RowCount         = rec.files.Count + 1;
                         fileTable.CellBorderStyle  = TableLayoutPanelCellBorderStyle.Single;
                         fileTable.BackColor        = Theme.Border;
+                        fileTable.Visible          = false;
                         fileTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, colName));
                         fileTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, colMd5));
                         fileTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, colSha));
@@ -1020,7 +1439,20 @@ namespace UupDumpFetcher
                         }
 
                         row.Controls.Add(fileTable);
-                        y += fileTable.Height;
+                        collapsedHeight = 76 + 10;
+                        expandedHeight  = 76 + fileTable.Height + 10;
+
+                        Panel rowRef = row;
+                        Label toggleRef = toggle;
+                        TableLayoutPanel fileTableRef = fileTable;
+                        int collapsedRef = collapsedHeight, expandedRef = expandedHeight;
+                        toggle.Click += delegate(object s, EventArgs e)
+                        {
+                            bool nowExpanded = !fileTableRef.Visible;
+                            fileTableRef.Visible = nowExpanded;
+                            toggleRef.Text = (nowExpanded ? "▾ " : "▸ ") + rec.files.Count + " file(s)";
+                            rowRef.Height = nowExpanded ? expandedRef : collapsedRef;
+                        };
                     }
 
                     Button btnRemove = Ctrl.DangerButton("Remove");
@@ -1099,13 +1531,22 @@ namespace UupDumpFetcher
                     };
                     row.Controls.Add(btnUpload);
 
-                    row.Height = y + 10;
+                    row.Height = collapsedHeight;
                     list.Controls.Add(row);
                 }
             }
 
             win.Controls.Add(list);
             win.Controls.Add(lbl);
+            // Accessing .Handle forces the native control to exist now, so
+            // the dark-scrollbar theming call below is safe here (same
+            // pattern as the main log panel's own EnableDarkScrollBar call).
+            NativeMethods.EnableDarkScrollBar(list.Handle);
+            if (Theme.IsDark)
+            {
+                NativeMethods.SetDarkTitleBar(win.Handle, true);
+                NativeMethods.SetBorderAndCaptionColor(win.Handle, Theme.Border, Theme.Surface);
+            }
             win.ShowDialog(this);
         }
 

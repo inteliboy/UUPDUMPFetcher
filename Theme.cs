@@ -122,23 +122,70 @@ namespace UupDumpFetcher
         public static TextBox MakeEntry(bool password)
         {
             TextBox tb = new TextBox();
-            tb.Font        = SegoUI();
+            tb.Font = SegoUI();
             if (Theme.IsDark)
             {
-                tb.BackColor   = Theme.EntryBg;
-                tb.ForeColor   = Theme.EntryFg;
-                tb.BorderStyle = BorderStyle.FixedSingle;
+                tb.BackColor = Theme.EntryBg;
+                tb.ForeColor = Theme.EntryFg;
             }
             else
             {
-                tb.BackColor   = SystemColors.Window;
-                tb.ForeColor   = SystemColors.WindowText;
-                tb.BorderStyle = BorderStyle.Fixed3D;
+                tb.BackColor = SystemColors.Window;
+                tb.ForeColor = SystemColors.WindowText;
             }
+            // BorderStyle is owned by Bordered()/RestyleBordered() below, not
+            // set here - every MakeEntry() caller wraps its result in
+            // Bordered() before adding it to the form.
             if (password) tb.UseSystemPasswordChar = true;
             return tb;
         }
         public static TextBox MakeEntry() { return MakeEntry(false); }
+
+        // BorderStyle.FixedSingle's border always renders a fixed light gray
+        // (confirmed via live pixel-check: ~240,240,240) regardless of theme -
+        // WinForms doesn't expose that border's color as a settable property.
+        // Wraps tb in a Panel and draws the border as that panel's own
+        // BackColor instead: dark mode sets tb.BorderStyle = None and gives
+        // the wrapper a 1px Theme.Border-colored Padding; light mode keeps
+        // tb's native BorderStyle.Fixed3D untouched and the wrapper is a
+        // zero-padding, transparent pass-through, so light mode's rendering
+        // (already verified working) doesn't change at all.
+        //
+        // Uses tb.PreferredHeight, not the caller's own tb.Height, to size
+        // the wrapper - a single-line TextBox silently ignores any explicit
+        // Height (WinForms clamps it to the font's natural line height
+        // regardless of Dock/explicit size), so sizing the wrapper off the
+        // caller's requested Height left a real gap of leftover Dock.Fill
+        // space below the text box, which then showed through as an
+        // oversized border-colored band along the wrapper's own bottom edge
+        // (confirmed live: an 8px-tall band vs.the intended 1px elsewhere).
+        public static Panel Bordered(TextBox tb)
+        {
+            Panel p = new Panel();
+            tb.Dock = DockStyle.Fill;
+            p.Controls.Add(tb);
+            RestyleBordered(p);
+            return p;
+        }
+
+        public static void RestyleBordered(Panel p)
+        {
+            TextBox tb = p.Controls.Count > 0 ? p.Controls[0] as TextBox : null;
+            if (tb == null) return;
+            if (Theme.IsDark)
+            {
+                tb.BorderStyle = BorderStyle.None;
+                p.Padding      = new Padding(1);
+                p.BackColor    = Theme.Border;
+            }
+            else
+            {
+                tb.BorderStyle = BorderStyle.Fixed3D;
+                p.Padding      = new Padding(0);
+                p.BackColor    = Color.Transparent;
+            }
+            p.Height = tb.PreferredHeight + p.Padding.Vertical;
+        }
 
         public static CheckBox MakeCheck(string text)
         {

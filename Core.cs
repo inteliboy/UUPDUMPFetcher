@@ -75,6 +75,75 @@ namespace UupDumpFetcher
         {
             try { FlushMenuThemesInternal(); } catch { }
         }
+
+        // Disables visual-styles theming for one control entirely, reverting
+        // it to classic (non-themed) painting. Needed for TabControl: under
+        // Application.EnableVisualStyles(), the pane background strip under
+        // the tab headers is painted via a UxTheme part that ignores
+        // BackColor no matter what - this shows up as a persistent light-gray
+        // gap even with TabAppearance.FlatButtons + owner-drawn tabs. Classic
+        // rendering paints that region with BackColor instead.
+        public static void DisableVisualStyles(IntPtr hwnd)
+        {
+            try { SetWindowTheme(hwnd, "", ""); } catch { }
+        }
+
+        // DWMWA_USE_IMMERSIVE_DARK_MODE - documented (unlike the uxtheme
+        // ordinals above), but only actually honored on Windows 10 1809+.
+        // The attribute number changed once: 19 on early 1809-era builds,
+        // 20 from Windows 10 20H1 onward (including all of Windows 11) -
+        // try 20 first since that covers every currently-supported OS this
+        // tool runs on, falling back to 19 for completeness.
+        //
+        // This alone darkens the title bar's own background/text/caption
+        // buttons, but NOT the thin 1px border Windows 11 draws around the
+        // whole window - that is a separate, Windows-11-only (build 22000+)
+        // attribute, DWMWA_BORDER_COLOR (34, paired with DWMWA_CAPTION_COLOR,
+        // 35) - both verified against Microsoft's own public
+        // DWMWINDOWATTRIBUTE docs, not guessed. Found missing by the user
+        // pointing out a real screenshot still showing a light border on
+        // all four window edges even after SetDarkTitleBar was already
+        // applied - DwmSetWindowAttribute succeeding for one attribute says
+        // nothing about whether a *different* attribute is also needed.
+        [DllImport("dwmapi.dll")]
+        static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+        public static void SetDarkTitleBar(IntPtr hwnd, bool dark)
+        {
+            int v = dark ? 1 : 0;
+            try
+            {
+                if (DwmSetWindowAttribute(hwnd, 20, ref v, sizeof(int)) != 0)
+                    DwmSetWindowAttribute(hwnd, 19, ref v, sizeof(int));
+            }
+            catch { }
+        }
+
+        // COLORREF is 0x00BBGGRR, not RGB - byte order matters here.
+        static int ToColorRef(Color c) { return c.R | (c.G << 8) | (c.B << 16); }
+
+        // Windows 11 only (silently no-ops on Windows 10, where this
+        // attribute doesn't exist and DwmSetWindowAttribute just fails).
+        // Pass Color.Empty for either parameter to reset that one back to
+        // the system default instead of setting an explicit color.
+        public static void SetBorderAndCaptionColor(IntPtr hwnd, Color border, Color caption)
+        {
+            const int DWMWA_BORDER_COLOR = 34;
+            const int DWMWA_CAPTION_COLOR = 35;
+            const int DWMWA_COLOR_DEFAULT = unchecked((int)0xFFFFFFFF);
+            try
+            {
+                int b = border.IsEmpty ? DWMWA_COLOR_DEFAULT : ToColorRef(border);
+                DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, ref b, sizeof(int));
+            }
+            catch { }
+            try
+            {
+                int c = caption.IsEmpty ? DWMWA_COLOR_DEFAULT : ToColorRef(caption);
+                DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, ref c, sizeof(int));
+            }
+            catch { }
+        }
     }
 
     // =========================================================================
