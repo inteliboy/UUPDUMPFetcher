@@ -2,9 +2,14 @@
 
 A Windows desktop tool that downloads Windows 11 Insider/servicing update
 components (UUP files) directly from Microsoft's own Windows Update servers
-and assembles them into a bootable `.esd` image - no manual UUP-to-ISO
-conversion steps, and no dependency on a third-party site for the actual
-download in the common case.
+and assembles them into a `.esd` image - a highly-compressed WIM-format
+Windows image, the same format Windows Update servicing payloads have always
+used. This is **not** a bootable ISO by itself (no boot files, no WinPE/setup
+environment) - it's the raw servicing image, without the Copilot/AI-feature
+components that official consumer ISOs and the Media Creation Tool bundle in
+(the same way classic Windows Update-based payloads never included them
+either), ready to be fed into whatever ISO-building step you already use,
+without depending on a third-party site for the download itself.
 
 It talks to Microsoft's Windows Update SOAP endpoints the same way
 [uupdump.net](https://uupdump.net)'s own backend does, and falls back to
@@ -84,8 +89,8 @@ Required files in `assets\`:
    enabled branch for its latest build, or type an exact build number (e.g.
    `26100.7092`) to fetch that specific one - optionally restricting to one
    architecture.
-3. Check **Process update to ESD** to have the tool assemble a bootable
-   `.esd` after downloading (instead of leaving the raw UUP files as-is).
+3. Check **Process update to ESD** to have the tool assemble the `.esd`
+   image after downloading (instead of leaving the raw UUP files as-is).
 4. Click **Start Fetching**. Progress and a running log are shown on the
    right; **Stop** aborts cooperatively at the next safe point.
 5. On the **Settings** tab: pick which branches get scanned automatically,
