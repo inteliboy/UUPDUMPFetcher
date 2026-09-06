@@ -40,10 +40,14 @@ namespace UupDumpFetcher
         const string WuNs = "http://www.microsoft.com/SoftwareDistribution/Server/ClientWebService";
 
         // Rings to probe in order, per category, since which channel currently
-        // serves a given branch (GA vs Dev/Beta/Release Preview) shifts over
-        // time as Microsoft ships. RETAIL (GA) first since that is the common
-        // case; the others only get tried if RETAIL comes back empty.
-        static readonly string[] RingProbeOrder = { "RETAIL", "WIF", "WIS", "RP" };
+        // serves a given branch (GA vs Dev/Beta/Release Preview/Canary) shifts
+        // over time as Microsoft ships. RETAIL (GA) first since that is the
+        // common case; the others only get tried if RETAIL comes back empty.
+        // CANARY last since it only ever matters for the newest/most
+        // experimental branch (e.g. 28000.x "26H1") - verified against
+        // uup-dump/api's own shared/requests.php, which has this exact ring
+        // (sets FlightingBranchName=CanaryChannel, not just WIF's "Dev").
+        static readonly string[] RingProbeOrder = { "RETAIL", "WIF", "WIS", "RP", "CANARY" };
 
         static readonly Random _rnd = new Random();
         static string   _cookieEncData;
@@ -157,6 +161,7 @@ namespace UupDumpFetcher
             if (ring == "WIS") fltBranch = "Beta";
             if (ring == "RP")  fltBranch = "ReleasePreview";
             if (ring == "MSIT") { fltBranch = "MSIT"; fltRing = "Internal"; }
+            if (ring == "CANARY") fltBranch = "CanaryChannel";
 
             long now = NowUnix();
             List<string> a = new List<string>();
