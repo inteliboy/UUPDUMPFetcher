@@ -249,6 +249,7 @@ namespace UupDumpFetcher
                     }
 
                     HashSet<string> foundArches = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    Dictionary<string, BuildInfo> directByArch = new Dictionary<string, BuildInfo>(StringComparer.OrdinalIgnoreCase);
                     foreach (string arch in archsToTry)
                     {
                         if (stopEvent != null && stopEvent.WaitOne(0)) return;
@@ -256,23 +257,111 @@ namespace UupDumpFetcher
                         BuildInfo b = WuClient.DiscoverLatest(cat[2], arch, cat[1], log);
                         if (b != null)
                         {
-                            allBuilds.Add(b);
+                            directByArch[arch] = b;
                             foundArches.Add(arch);
                         }
                     }
 
-                    if (foundArches.Count < archsToTry.Length)
+                    // uupdump.net cross-check, always run (not just when an arch was
+                    // missed entirely). WuClient.DiscoverLatest's normal SyncUpdates
+                    // "what's next for me" resolution only ever offers the regular
+                    // mandatory Cumulative Update ("B"-release) for a branch - it does
+                    // NOT surface a later optional Preview Cumulative Update ("C"/"D"
+                    // -release) even when one is already live, because that requires
+                    // declaring the Preview build's own number as your current AppVer/
+                    // OSVersion in the SyncUpdates request, not just "give me updates
+                    // for whatever's next". Verified live 2026-09-07: 26H1's real
+                    // Patch Tuesday CU 28000.2704 was found this way, while the newer
+                    // Preview CU 28000.2804 (KB5120996) was invisible to it - yet fully
+                    // resolvable directly from Microsoft via WuClient.DiscoverExact's
+                    // 'thisonly' query once the build number is known (and, since
+                    // ComposeFileGetRequest's own 'thisonly' fix - see its comment -
+                    // fully downloadable from Microsoft too, no uupdump.net needed
+                    // past this point). uupdump.net's own known.php listing is
+                    // community/scan-tracked and already carries these Preview
+                    // builds, so it is queried here as a cross-check for "is
+                    // something newer already known" and, if so, that build is
+                    // resolved directly from Microsoft (falling back to uupdump.net's
+                    // own get.php only if the direct resolution fails - normally
+                    // only for a build old enough that Microsoft has aged it off
+                    // live serving) rather than silently trusting whatever
+                    // WuClient.DiscoverLatest alone reported as "latest".
+                    if (stopEvent != null && stopEvent.WaitOne(0)) return;
+                    // Best-effort: this cross-check now runs even when Microsoft
+                    // resolved every arch directly, so a uupdump.net outage here must
+                    // not abort the whole scan the way it previously could when this
+                    // fetch only ran on an arch-miss - fall through with an empty
+                    // scrape list (i.e. trust WuClient's result as-is) on any failure.
+                    List<BuildInfo> scraped = new List<BuildInfo>();
+                    try
                     {
-                        if (stopEvent != null && stopEvent.WaitOne(0)) return;
-                        if (log != null) log(cat[1] + ": falling back to uupdump.net (architecture" +
-                            (archsToTry.Length - foundArches.Count == 1 ? "" : "s") + " not found directly)...");
                         string url = BaseUrl + "/known.php?q=category%3A" + cat[0];
                         string html = Net.FetchText(url, 3, log);
-                        List<BuildInfo> builds = HtmlParser.ParseKnownBuilds(html);
-                        foreach (BuildInfo b in builds)
+                        scraped = HtmlParser.ParseKnownBuilds(html);
+                        foreach (BuildInfo sb in scraped)
+                        {
+                            sb.Branch = cat[1];
+                            try { sb.VersionTuple = Array.ConvertAll(sb.BuildNum.Split('.'), int.Parse); }
+                            catch { sb.VersionTuple = null; }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        if (log != null) log(cat[1] + ": uupdump.net cross-check failed (" + ex.Message + ") - using Microsoft's direct result as-is.");
+                    }
+
+                    foreach (string arch in archsToTry)
+                    {
+                        BuildInfo scrapeBest = null;
+                        foreach (BuildInfo sb in scraped)
+                        {
+                            if (sb.VersionTuple == null || !sb.Arch.Equals(arch, StringComparison.OrdinalIgnoreCase)) continue;
+                            if (scrapeBest == null || CompareVersions(sb.VersionTuple, scrapeBest.VersionTuple) > 0)
+                                scrapeBest = sb;
+                        }
+                        if (scrapeBest == null) continue;
+
+                        BuildInfo current;
+                        directByArch.TryGetValue(arch, out current);
+                        int[] currentTuple = null;
+                        if (current != null)
+                        {
+                            try { currentTuple = Array.ConvertAll(current.BuildNum.Split('.'), int.Parse); }
+                            catch { currentTuple = null; }
+                        }
+
+                        bool scrapeIsNewer = currentTuple == null ||
+                            CompareVersions(scrapeBest.VersionTuple, currentTuple) > 0;
+                        if (!scrapeIsNewer) continue;
+
+                        if (log != null) log(cat[1] + " (" + arch + "): uupdump.net lists build " +
+                            scrapeBest.BuildNum + (current != null ? " newer than " + current.BuildNum +
+                            " from Microsoft's normal scan" : " (not found directly)") + " - resolving directly...");
+                        BuildInfo direct = WuClient.DiscoverExact(scrapeBest.BuildNum, arch, cat[1], log);
+                        if (direct != null)
+                        {
+                            directByArch[arch] = direct;
+                            foundArches.Add(arch);
+                        }
+                        else if (current == null)
+                        {
+                            // Direct resolution failed too - keep the scraped entry so
+                            // the existing get.php-based fallback path below can still
+                            // process it.
+                            directByArch[arch] = scrapeBest;
+                            foundArches.Add(arch);
+                        }
+                    }
+
+                    foreach (BuildInfo b in directByArch.Values) allBuilds.Add(b);
+
+                    if (foundArches.Count < archsToTry.Length)
+                    {
+                        if (log != null) log(cat[1] + ": falling back to uupdump.net (architecture" +
+                            (archsToTry.Length - foundArches.Count == 1 ? "" : "s") + " not found directly)...");
+                        foreach (BuildInfo b in scraped)
                         {
                             if (foundArches.Contains(b.Arch)) continue;
-                            b.Branch = cat[1];
                             allBuilds.Add(b);
                         }
                     }

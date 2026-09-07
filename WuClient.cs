@@ -420,8 +420,24 @@ namespace UupDumpFetcher
             long created = NowUnix();
             long expires = created + 120;
 
+            // 'thisonly' here adds MediaBranch to deviceAttributes (see
+            // ComposeDeviceAttributes) - required for GetExtendedUpdateInfo2 to
+            // return any FileLocations for an update discovered via DiscoverExact's
+            // own 'thisonly' SyncUpdates query (e.g. an optional Preview Cumulative
+            // Update, which is only ever reachable that way - see DiscoverLatest's
+            // own comment). Verified live 2026-09-07 against Microsoft directly:
+            // omitting this made GetExtendedUpdateInfo2 return zero FileLocations
+            // for 28000.2804's UpdateID on every ring/sku; adding it alone (no
+            // other change) made the same request return real file locations -
+            // matching uup-dump/api's own get.php, which persists and replays the
+            // exact ring/sku/branch/flags used at discovery time (their $info
+            // array, from uupApiReadFileinfo()) rather than a fresh/default
+            // context. Confirmed harmless for a regular (non-thisonly-discovered)
+            // Cumulative Update too (28000.2704 resolves identically with or
+            // without this flag) - so this is now always sent, not conditional on
+            // how the update was originally discovered.
             string deviceAttributes = ComposeDeviceAttributes(ring, checkBuild, arch, sku, type,
-                new List<string>(), "auto");
+                new List<string> { "thisonly" }, "auto");
 
             return
 "<s:Envelope xmlns:a=\"http://www.w3.org/2005/08/addressing\" xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\">" +
@@ -508,6 +524,16 @@ namespace UupDumpFetcher
         // string sort), we filter by product explicitly - with the full
         // companion-product list in the request, unrelated leaves (OOBE,
         // Appraiser, etc.) can legitimately come back in the same response.
+        //
+        // Defensive: if a response ever legitimately contains more than one
+        // matching leaf for wantProduct, keep the highest FoundBuild rather
+        // than whichever happens to come first in document order. Verified
+        // live 2026-09-07 that a real response for Client.OS.rs2.amd64 (26H1)
+        // contains only a single matching leaf even when a newer build is
+        // separately resolvable - so this alone does NOT explain
+        // DiscoverLatest missing 28000.2804 while 28000.2804 is live and
+        // reachable via DiscoverExact('thisonly'). See DiscoverLatest's own
+        // comment for the real cause and fix (uupdump.net cross-check).
         static DiscoverResult ParseSyncUpdates(string syncXml, string wantProduct)
         {
             XmlDocument doc = new XmlDocument();
@@ -531,6 +557,7 @@ namespace UupDumpFetcher
                 byId[id].Add(fragDoc);
             }
 
+            DiscoverResult best = null;
             foreach (XmlNode ui in updateInfos)
             {
                 XmlNode isLeafNode = ui.SelectSingleNode("wu:IsLeaf", nsmgr);
@@ -592,9 +619,11 @@ namespace UupDumpFetcher
                 }
 
                 if (r.Title == null) r.Title = "Windows build " + r.FoundBuild;
-                return r;
+
+                if (best == null || CompareBuildStrings(r.FoundBuild, best.FoundBuild) > 0)
+                    best = r;
             }
-            return null;
+            return best;
         }
 
         static DiscoverResult DiscoverInternal(string arch, string build, List<string> flags, Action<string> log, int sku)
