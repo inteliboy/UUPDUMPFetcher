@@ -180,6 +180,26 @@ namespace UupDumpFetcher
             new string[] { "w11-24h2", "Windows 11 24H2", "26100.1" },
         };
 
+        // Known base-build-number families per category slug (mirrors
+        // BranchFromName's own prefix mapping below). Used to reject
+        // uupdump.net known.php category-listing entries whose build number
+        // doesn't actually belong to that branch - uupdump.net's community
+        // scan tags some Canary/Dev-channel builds (e.g. 26340.x, 28020.x)
+        // under the same w11-26h2/w11-26h1 category slugs despite not being
+        // part of the RTM/Beta-channel family at all. Without this filter,
+        // the cross-check at the bottom of the Categories loop (added to
+        // catch legitimate newer Preview CUs like 28000.2804) only compares
+        // build numbers numerically, so any higher-numbered Canary/Dev build
+        // uupdump.net lists under the category looks "newer" and gets
+        // resolved + downloaded as if it belonged to the branch.
+        static readonly Dictionary<string, string[]> CategoryBuildFamilies = new Dictionary<string, string[]>
+        {
+            { "w11-26h2", new string[] { "26100", "26200", "26300" } },
+            { "w11-23h2", new string[] { "22631" } },
+            { "w11-26h1", new string[] { "28000" } },
+            { "w11-24h2", new string[] { "26100" } },
+        };
+
         static readonly string[] AllArches = new string[] { "amd64", "arm64" };
 
         public static void Run(string targetBuild, string targetArch,
@@ -303,6 +323,30 @@ namespace UupDumpFetcher
                             sb.Branch = cat[1];
                             try { sb.VersionTuple = Array.ConvertAll(sb.BuildNum.Split('.'), int.Parse); }
                             catch { sb.VersionTuple = null; }
+                        }
+
+                        // Drop any scraped entry whose build number isn't part of
+                        // this category's known family (see CategoryBuildFamilies) -
+                        // a Canary/Dev-channel build mistagged under this category
+                        // must never be treated as "newer" and pulled in below.
+                        string[] validMajors;
+                        CategoryBuildFamilies.TryGetValue(cat[0], out validMajors);
+                        if (validMajors != null)
+                        {
+                            List<BuildInfo> familyFiltered = new List<BuildInfo>();
+                            foreach (BuildInfo sb in scraped)
+                            {
+                                int dot = sb.BuildNum.IndexOf('.');
+                                string major = dot >= 0 ? sb.BuildNum.Substring(0, dot) : sb.BuildNum;
+                                if (Array.IndexOf(validMajors, major) < 0)
+                                {
+                                    if (log != null) Logger.LogUiOnly(log, cat[1] + ": ignoring uupdump.net-listed build " +
+                                        sb.BuildNum + " (" + sb.Arch + ") - not part of this branch's known build family, likely Canary/Dev channel.");
+                                    continue;
+                                }
+                                familyFiltered.Add(sb);
+                            }
+                            scraped = familyFiltered;
                         }
                     }
                     catch (Exception ex)

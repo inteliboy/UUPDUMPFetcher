@@ -637,6 +637,15 @@ namespace UupDumpFetcher
                 return null;
             }
 
+            // The queried build's own major component (e.g. "26300" out of
+            // "10.0.26300.1") is the only reliable signal for which branch a
+            // ring's answer actually belongs to - ParseSyncUpdates itself only
+            // filters by architecture, not branch. Enforced below: a ring
+            // whose answer's major doesn't match is treated as no match, not
+            // accepted.
+            string[] bparts = build.Split('.');
+            string expectedMajor = bparts.Length > 2 ? bparts[2] : null;
+
             foreach (string ring in RingProbeOrder)
             {
                 string syncXml;
@@ -661,6 +670,26 @@ namespace UupDumpFetcher
 
                 if (r != null)
                 {
+                    // Guard against ring fallthrough surfacing an unrelated
+                    // branch/channel: when RETAIL has nothing new to offer for
+                    // a seed build, the loop below falls through to WIF/WIS/RP/
+                    // CANARY (Insider channels) - which can answer with an
+                    // entirely different, much newer build (e.g. querying the
+                    // 26H2 seed 26300.1 got back Dev-channel build 26340.9233
+                    // from the WIF ring, silently mislabeled as "26H2" and
+                    // downloaded). Verified live 2026-09: RETAIL genuinely
+                    // returning nothing for a stable branch is common and not
+                    // itself a bug - only accepting a mismatched-major answer
+                    // in its place is.
+                    string foundMajor = r.FoundBuild != null ? r.FoundBuild.Split('.')[0] : null;
+                    if (expectedMajor != null && foundMajor != expectedMajor)
+                    {
+                        Logger.LogFile("WuClient: ring " + ring + " (sku=" + sku + ") answered with build " +
+                            r.FoundBuild + " which doesn't match queried major " + expectedMajor +
+                            " - different branch/channel bleeding through (likely Insider), ignoring and trying next ring.");
+                        continue;
+                    }
+
                     r.Ring = ring;
                     Logger.LogFile("WuClient: matched on ring " + ring + " (sku=" + sku + ") for " + wantProduct);
                     return r;
