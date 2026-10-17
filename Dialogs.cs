@@ -140,17 +140,20 @@ namespace UupDumpFetcher
                 f.AutoScaleMode = AutoScaleMode.None;
 
                 Icon sysIcon = IconFor(icon);
-                int picBottom = 0;
+                int picBottom = 0, picRight = 0;
                 if (sysIcon != null)
                 {
                     PictureBox pic = new PictureBox();
                     pic.Image = sysIcon.ToBitmap();
                     pic.SizeMode = PictureBoxSizeMode.AutoSize;
-                    pic.Location = new Point(20, 20);
+                    pic.Location = new Point(Ctrl.S(20), Ctrl.S(20));
                     f.Controls.Add(pic);
                     picBottom = pic.Bottom;
+                    picRight = pic.Right;
                 }
-                int textLeft = sysIcon != null ? 66 : 20;
+                // Layout constants are authored for 96 DPI; Ctrl.S() scales them
+                // (text/icon sizes are measured, so they are already in real px).
+                int textLeft = sysIcon != null ? picRight + Ctrl.S(14) : Ctrl.S(20);
 
                 Label lbl = new Label();
                 lbl.Text = text;
@@ -158,17 +161,17 @@ namespace UupDumpFetcher
                 lbl.ForeColor = Theme.Fg;
                 lbl.BackColor = Color.Transparent;
                 lbl.AutoSize = true;
-                lbl.MaximumSize = new Size(360, 0);
-                lbl.Location = new Point(textLeft, 22);
+                lbl.MaximumSize = new Size(Ctrl.S(360), 0);
+                lbl.Location = new Point(textLeft, Ctrl.S(22));
                 f.Controls.Add(lbl);
 
-                int contentBottom = Math.Max(lbl.Bottom, picBottom) + 24;
-                int clientWidth = Math.Max(360, textLeft + lbl.Width + 20);
+                int contentBottom = Math.Max(lbl.Bottom, picBottom) + Ctrl.S(24);
+                int clientWidth = Math.Max(Ctrl.S(360), textLeft + lbl.Width + Ctrl.S(20));
 
                 string[] labels; DialogResult[] results;
                 ButtonSpecsFor(buttons, out labels, out results);
 
-                int btnH = 30, gap = 10, btnBottomMargin = 16;
+                int btnH = Ctrl.S(30), gap = Ctrl.S(10), btnBottomMargin = Ctrl.S(16);
                 int totalBtnW = 0;
                 Button[] btns = new Button[labels.Length];
                 for (int i = 0; i < labels.Length; i++)
@@ -178,7 +181,7 @@ namespace UupDumpFetcher
                     b.Font = Ctrl.SegoUI();
                     b.FlatStyle = FlatStyle.Flat;
                     b.Height = btnH;
-                    b.Width = TextRenderer.MeasureText(labels[i], b.Font).Width + 30;
+                    b.Width = TextRenderer.MeasureText(labels[i], b.Font).Width + Ctrl.S(30);
                     b.FlatAppearance.BorderSize = 1;
                     b.FlatAppearance.BorderColor = Theme.Border;
                     b.Cursor = Cursors.Hand;
@@ -200,8 +203,8 @@ namespace UupDumpFetcher
                 }
                 totalBtnW -= gap;
 
-                clientWidth = Math.Max(clientWidth, totalBtnW + 40);
-                int x = clientWidth - totalBtnW - 20;
+                clientWidth = Math.Max(clientWidth, totalBtnW + Ctrl.S(40));
+                int x = clientWidth - totalBtnW - Ctrl.S(20);
                 foreach (Button b in btns)
                 {
                     b.Location = new Point(x, contentBottom);

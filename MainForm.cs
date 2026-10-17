@@ -52,6 +52,7 @@ namespace UupDumpFetcher
         // only (see ApplyTheme). _archButtonFace also owner-paints its own
         // dropdown arrow glyph, since it fully covers the native one.
         Panel       _archBorderLeft, _archBorderTop, _archBorderBottom, _archButtonFace;
+        Action      _layoutArchChrome;
 
         // Worker state
         bool             _busy;
@@ -95,6 +96,10 @@ namespace UupDumpFetcher
             // controls exist (covers users whose OS theme differs from the
             // default).
             ApplyTheme();
+            // The layout is authored in 96-DPI pixels; fonts are in points and
+            // already follow DPI, so scale every size/location/padding to match.
+            Ctrl.ScaleForDpi(this);
+            if (_layoutArchChrome != null) _layoutArchChrome();
             ResumeLayout(false);
 
             // Log messages are queued by the worker thread; the UI timer
@@ -548,18 +553,39 @@ namespace UupDumpFetcher
             left.Controls.Add(_archBorderTop);
             left.Controls.Add(_archBorderBottom);
             left.Controls.Add(_archButtonFace);
-            int archH = _cmbArch.PreferredHeight;
-            _archBorderLeft.Bounds = new Rectangle(_cmbArch.Left, _cmbArch.Top, 3, archH);
-            _archBorderTop.Bounds = new Rectangle(_cmbArch.Left, _cmbArch.Top, _cmbArch.Width, 3);
-            _archBorderBottom.Bounds = new Rectangle(_cmbArch.Left, _cmbArch.Top + archH - 3, _cmbArch.Width, 3);
-            _archButtonFace.Bounds = new Rectangle(_cmbArch.Left + _cmbArch.Width - 20, _cmbArch.Top, 20, archH);
+            // Geometry is (re)computed by LayoutArchChrome, which must run
+            // AFTER Ctrl.ScaleForDpi: PreferredHeight and the native chrome
+            // are already in real device pixels, so letting Control.Scale
+            // multiply these panels' bounds again made them far too big.
+            // Measured at 150% scaling: native border 2px, button 28px wide
+            // (3px/20px at 100%); the overlay is sized slightly generous so
+            // no native light pixel can peek out.
+            _layoutArchChrome = delegate()
+            {
+                // Real laid-out height: once scaled it can be smaller than
+                // PreferredHeight, and the overlays must end at the control's
+                // actual bottom edge to cover its native bottom border.
+                int archH = _cmbArch.Height;
+                int bw = Math.Max(3, Ctrl.S(2));
+                int bf = Ctrl.S(20);
+                _archBorderLeft.Bounds = new Rectangle(_cmbArch.Left, _cmbArch.Top, bw, archH);
+                _archBorderTop.Bounds = new Rectangle(_cmbArch.Left, _cmbArch.Top, _cmbArch.Width, bw);
+                _archBorderBottom.Bounds = new Rectangle(_cmbArch.Left, _cmbArch.Top + archH - bw, _cmbArch.Width, bw);
+                _archButtonFace.Bounds = new Rectangle(_cmbArch.Left + _cmbArch.Width - bf, _cmbArch.Top, bf, archH);
+            };
+            _layoutArchChrome();
+            // Windows clamps the combo to its natural height when its handle
+            // is created (after scaling), so follow the real bounds.
+            _cmbArch.SizeChanged     += delegate { _layoutArchChrome(); };
+            _cmbArch.LocationChanged += delegate { _layoutArchChrome(); };
             _archButtonFace.Paint += delegate(object s, PaintEventArgs e)
             {
                 using (SolidBrush b = new SolidBrush(Theme.FgDim))
                 {
                     int cx = _archButtonFace.Width / 2, cy = _archButtonFace.Height / 2;
+                    int hw = Ctrl.S(4), up = Ctrl.S(2), dn = Ctrl.S(3);
                     Point[] tri = new Point[] {
-                        new Point(cx - 4, cy - 2), new Point(cx + 4, cy - 2), new Point(cx, cy + 3)
+                        new Point(cx - hw, cy - up), new Point(cx + hw, cy - up), new Point(cx, cy + dn)
                     };
                     e.Graphics.FillPolygon(b, tri);
                 }
@@ -635,8 +661,16 @@ namespace UupDumpFetcher
         {
             _tabSettings.BackColor = Theme.Bg;
 
+            // The page scrolls instead of clipping when the window is too
+            // short (the last rows, incl. Save Settings, were unreachable).
+            // Dock.Top + AutoSize lets the table grow to its content height.
+            _tabSettings.AutoScroll = true;
+            NativeMethods.EnableDarkScrollBar(_tabSettings.Handle);
+
             TableLayoutPanel tl = new TableLayoutPanel();
-            tl.Dock        = DockStyle.Fill;
+            tl.Dock        = DockStyle.Top;
+            tl.AutoSize    = true;
+            tl.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             tl.ColumnCount = 2;
             tl.Padding     = new Padding(28);
             tl.BackColor   = Color.Transparent;
@@ -794,7 +828,12 @@ namespace UupDumpFetcher
 
         void AddSettingRow(TableLayoutPanel tl, string label, Control ctl, int row)
         {
-            tl.Controls.Add(Ctrl.MakeLabel(label, true), 0, row);
+            // Vertical margin keeps a wrapped (two-line) label from touching
+            // the next row's label and roughly lines label text up with the
+            // text inside the entry beside it.
+            Label lbl = Ctrl.MakeLabel(label, true);
+            lbl.Margin = new Padding(3, 7, 3, 9);
+            tl.Controls.Add(lbl, 0, row);
             // Anchor (stretches width, keeps ctl's own explicit Height),
             // not Dock.Fill (stretches both dimensions to the row's full
             // AutoSize height) - the Upload destination row's label wraps
@@ -1451,13 +1490,24 @@ namespace UupDumpFetcher
                             bool nowExpanded = !fileTableRef.Visible;
                             fileTableRef.Visible = nowExpanded;
                             toggleRef.Text = (nowExpanded ? "▾ " : "▸ ") + rec.files.Count + " file(s)";
-                            rowRef.Height = nowExpanded ? expandedRef : collapsedRef;
+                            // Heights are authored at 96 DPI; the row itself was
+                            // already scaled with the window.
+                            rowRef.Height = Ctrl.S(nowExpanded ? expandedRef : collapsedRef);
                         };
                     }
 
+                    // The Upload button's width follows its label ("Upload (no
+                    // dest)" is wider than the old fixed 110px). Measured text is
+                    // in real pixels; the row is authored at 96 DPI and scaled
+                    // later, so convert back before using it.
+                    string uploadLabel = canUpload ? "Upload" : "Upload (no dest)";
+                    int uploadW = Math.Max(110, (int)Math.Ceiling(
+                        (TextRenderer.MeasureText(uploadLabel, Ctrl.SegoUI()).Width + Ctrl.S(28))
+                        / Ctrl.DpiScale));
+
                     Button btnRemove = Ctrl.DangerButton("Remove");
                     btnRemove.Size     = new Size(90, 28);
-                    btnRemove.Location = new Point(row.Width - 210, 8);
+                    btnRemove.Location = new Point(row.Width - uploadW - 10 - 90, 8);
                     btnRemove.Anchor   = AnchorStyles.Top | AnchorStyles.Right;
                     btnRemove.Click += delegate(object s, EventArgs e)
                     {
@@ -1482,9 +1532,9 @@ namespace UupDumpFetcher
                     };
                     row.Controls.Add(btnRemove);
 
-                    Button btnUpload = Ctrl.NormalButton(canUpload ? "Upload" : "Upload (no dest)");
-                    btnUpload.Size     = new Size(110, 28);
-                    btnUpload.Location = new Point(row.Width - 110, 8);
+                    Button btnUpload = Ctrl.NormalButton(uploadLabel);
+                    btnUpload.Size     = new Size(uploadW, 28);
+                    btnUpload.Location = new Point(row.Width - uploadW, 8);
                     btnUpload.Anchor   = AnchorStyles.Top | AnchorStyles.Right;
                     btnUpload.Enabled  = canUpload;
                     string origUploadText = btnUpload.Text;
@@ -1541,6 +1591,7 @@ namespace UupDumpFetcher
             // Accessing .Handle forces the native control to exist now, so
             // the dark-scrollbar theming call below is safe here (same
             // pattern as the main log panel's own EnableDarkScrollBar call).
+            Ctrl.ScaleForDpi(win);
             NativeMethods.EnableDarkScrollBar(list.Handle);
             if (Theme.IsDark)
             {

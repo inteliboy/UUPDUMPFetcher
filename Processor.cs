@@ -164,6 +164,33 @@ namespace UupDumpFetcher
             string outputFolder = Path.Combine(buildDir, buildVer, arch);
             Directory.CreateDirectory(outputFolder);
 
+            // MUMX v2 updates (KB5127936 / 26100.9807 onward) keep package
+            // metadata in the .mumx.esd container and ship thousands of top-level
+            // .mum files with no .cat. An ESD built from that tree cannot be
+            // installed (dism fails 0x80070002, or "succeeds" and the boot
+            // transaction reverts the components). The MSU itself installs fine,
+            // so for these the output is the original MSU rebuilt without the
+            // AI (WindowsWorkload) msix payloads instead of an ESD.
+            chk();
+            if (IsMumxV2(WimLibApi.ListRootNames(wimFile, 1), log))
+            {
+                string stage = null;
+                try
+                {
+                    string stagedSsu;
+                    string msuOut = RebuildMsuWithoutAi(buildDir, wimFile, outputFolder,
+                        log, stopEvent, out stage, out stagedSsu);
+                    return FinishBuild(buildDir, outputFolder, msuOut,
+                        stagedSsu ?? ssuCab, ndpCab, null,
+                        uploadDest, cleanup, log, stopEvent);
+                }
+                finally
+                {
+                    if (stage != null)
+                        try { LongIO.DeleteDirectory(stage); } catch { }
+                }
+            }
+
             // Extract WIM
             chk();
             // Sibling of wimFile's own actual directory, not buildDir directly -
@@ -229,6 +256,139 @@ namespace UupDumpFetcher
                 Path.GetFileNameWithoutExtension(wimFile) + ".esd");
             ToolHelper.WimlibCapture(psfWorkDir, esdDest, log, stopEvent);
 
+            return FinishBuild(buildDir, outputFolder, esdDest, ssuCab, ndpCab, wimExtract,
+                uploadDest, cleanup, log, stopEvent);
+        }
+
+        // True when the WIM root holds .mum files that have no matching .cat
+        // (the MUMX v2 layout - see ProcessBuild).
+        static bool IsMumxV2(List<string> rootNames, Action<string> log)
+        {
+            HashSet<string> cats = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            List<string> mums = new List<string>();
+            foreach (string nm in rootNames)
+            {
+                if (nm.EndsWith(".cat", StringComparison.OrdinalIgnoreCase))
+                    cats.Add(nm.Substring(0, nm.Length - 4));
+                else if (nm.EndsWith(".mum", StringComparison.OrdinalIgnoreCase))
+                    mums.Add(nm.Substring(0, nm.Length - 4));
+            }
+            int noCat = 0;
+            foreach (string mum in mums)
+                if (!cats.Contains(mum)) noCat++;
+            if (noCat == 0) return false;
+            if (log != null)
+                log(string.Format("MUMX v2 update detected ({0} of {1} .mum files have no .cat): " +
+                    "ESD conversion is not possible, rebuilding the MSU without AI payloads instead.",
+                    noCat, mums.Count));
+            return true;
+        }
+
+        // The AI components shipped as msix payloads (plus their .rif.cab).
+        static bool IsAiPayload(string name)
+        {
+            if (!name.StartsWith("WindowsWorkload.", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return name.EndsWith(".msix", StringComparison.OrdinalIgnoreCase) ||
+                   name.EndsWith(".msix.rif.cab", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Rebuilds the downloaded .msu (an uncompressed standard WIM) from its
+        // already-extracted root files, leaving out the AI msix payloads.
+        // Files are moved (not copied) into a staging directory next to the
+        // download; the caller deletes it. A failed run only costs a
+        // re-extraction of the MSU on the next attempt.
+        static string RebuildMsuWithoutAi(string buildDir, string wimFile, string outputFolder,
+            Action<string> log, ManualResetEvent stopEvent, out string stage, out string stagedSsu)
+        {
+            stage = null;
+            stagedSsu = null;
+
+            string[] msus = Directory.GetFiles(buildDir, "*.msu");
+            if (msus.Length == 0)
+                throw new FileNotFoundException("MSU file not found in " + buildDir);
+            string msuFile = msus[0];
+            long biggest = 0;
+            foreach (string m in msus)
+            {
+                long sz = new FileInfo(m).Length;
+                if (sz > biggest) { biggest = sz; msuFile = m; }
+            }
+
+            List<string> rootNames = WimLibApi.ListRootNames(msuFile, 1);
+            int sl = wimFile.LastIndexOf('\\');
+            string srcRoot = sl >= 0 ? wimFile.Substring(0, sl) : buildDir;
+
+            stage = Path.Combine(buildDir, "msu_rebuild");
+            if (LongIO.DirExists(stage)) LongIO.DeleteDirectory(stage);
+            LongIO.CreateDirectory(stage);
+
+            int kept = 0, dropped = 0;
+            long keptBytes = 0, droppedBytes = 0;
+            foreach (string name in rootNames)
+            {
+                string src = srcRoot + "\\" + name;
+                if (IsAiPayload(name))
+                {
+                    dropped++;
+                    if (LongIO.FileExists(src)) droppedBytes += LongIO.FileSize(src);
+                    continue;
+                }
+                if (!LongIO.Exists(src))
+                    throw new FileNotFoundException("Extracted MSU file missing: " + src);
+                if (LongIO.FileExists(src)) keptBytes += LongIO.FileSize(src);
+                LongIO.Move(src, stage + "\\" + name);
+                kept++;
+            }
+            if (log != null)
+                log(string.Format("MSU rebuild: keeping {0} files ({1:F2} GB), dropping {2} AI payload files ({3:F2} GB).",
+                    kept, keptBytes / 1073741824.0, dropped, droppedBytes / 1073741824.0));
+            if (kept == 0)
+                throw new Exception("MSU rebuild: nothing left to package.");
+
+            string ssuName = null;
+            foreach (string name in rootNames)
+                if (name.IndexOf("SSU", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    name.EndsWith(".cab", StringComparison.OrdinalIgnoreCase)) { ssuName = name; break; }
+            if (ssuName != null && LongIO.FileExists(stage + "\\" + ssuName))
+                stagedSsu = stage + "\\" + ssuName;
+
+            try
+            {
+                DriveInfo di = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(buildDir)));
+                if (di.AvailableFreeSpace < keptBytes + 536870912L)
+                    throw new Exception(string.Format(
+                        "Not enough disk space to rebuild the MSU: need ~{0:F1} GB, have {1:F1} GB.",
+                        keptBytes / 1073741824.0, di.AvailableFreeSpace / 1073741824.0));
+            }
+            catch (Exception exSpace)
+            {
+                if (exSpace.Message.IndexOf("disk space", StringComparison.OrdinalIgnoreCase) >= 0)
+                    throw;
+            }
+
+            string dest = Path.Combine(outputFolder, Path.GetFileName(msuFile));
+            if (File.Exists(dest)) File.Delete(dest);
+            // Compression NONE, standard (non-solid) WIM: same shape as the
+            // MS-produced MSU, whose payloads are already compressed.
+            WimLibApi.Capture(stage, dest, "Windows Update", 0, false,
+                "Rebuilding MSU", log, stopEvent);
+            return dest;
+        }
+
+        // Shared tail of ProcessBuild: checksums for the primary output (ESD or
+        // rebuilt MSU), SSU/NDP copies, WIM-extract cleanup and upload.
+        // wimExtract may be null (nothing to clean up).
+        static ProcessResult FinishBuild(string buildDir, string outputFolder,
+            string esdDest, string ssuCab, string ndpCab, string wimExtract,
+            string uploadDest, bool cleanup, Action<string> log, ManualResetEvent stopEvent)
+        {
+            Action chk = delegate()
+            {
+                if (stopEvent != null && stopEvent.WaitOne(0))
+                    throw new OperationCanceledException("Stopped by user.");
+            };
+
             // MD5 + SHA256 for ESD (SHA256 uses CNG/SHA-NI hardware acceleration
             // automatically where the CPU and OS support it).
             if (log != null) log("Generating MD5 / SHA256 checksums...");
@@ -279,13 +439,16 @@ namespace UupDumpFetcher
                     name = Path.GetFileName(ndpDest), md5 = ndpMd5, sha256 = ndpSha256 });
             }
 
-            // Clean up WIM extract
+            // Clean up WIM extract (none for the MSU rebuild path)
             chk();
-            if (log != null) log("Cleaning up WIM extract...");
-            for (int i = 0; i < 3; i++)
+            if (wimExtract != null)
             {
-                try { LongIO.DeleteDirectory(wimExtract); break; }
-                catch { Thread.Sleep(400); }
+                if (log != null) log("Cleaning up WIM extract...");
+                for (int i = 0; i < 3; i++)
+                {
+                    try { LongIO.DeleteDirectory(wimExtract); break; }
+                    catch { Thread.Sleep(400); }
+                }
             }
 
             if (log != null) log("Processing complete. Output in: " + outputFolder);

@@ -68,6 +68,38 @@ namespace UupDumpFetcher
     // =========================================================================
     static class Ctrl
     {
+        // System DPI / 96 (1.5 at 150% scaling). The process opts into system
+        // DPI awareness in Program.Main before any window exists, so this is
+        // the real value; UI code is authored in 96-DPI pixels and passes
+        // fixed pixel values through S() / ScaleForDpi().
+        static float _dpiScale;
+        public static float DpiScale
+        {
+            get
+            {
+                if (_dpiScale == 0f)
+                {
+                    try
+                    {
+                        using (Graphics g = Graphics.FromHwnd(IntPtr.Zero))
+                            _dpiScale = g.DpiX / 96f;
+                    }
+                    catch { _dpiScale = 1f; }
+                    if (_dpiScale < 1f) _dpiScale = 1f;
+                }
+                return _dpiScale;
+            }
+        }
+        public static int S(int px) { return (int)Math.Round(px * DpiScale); }
+
+        // Scales a control tree built from 96-DPI pixel values (sizes,
+        // locations, margins, padding, absolute table styles).
+        public static void ScaleForDpi(Control c)
+        {
+            float s = DpiScale;
+            if (s > 1.001f) c.Scale(new SizeF(s, s));
+        }
+
         public static Font SegoUI(float size, FontStyle style)
         { return new Font("Segoe UI", size, style); }
         public static Font SegoUI(float size) { return SegoUI(size, FontStyle.Regular); }

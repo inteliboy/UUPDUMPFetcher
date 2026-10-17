@@ -63,6 +63,15 @@ namespace UupDumpFetcher
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
         static extern int wimlib_extract_image(IntPtr wim, int image, string target, int extractFlags);
 
+        // int (*)(const struct wimlib_dir_entry *dentry, void *user_ctx)
+        delegate int WimlibDirCallback(IntPtr dentry, IntPtr ctx);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
+        static extern int wimlib_iterate_dir_tree(IntPtr wim, int image, string path,
+            int flags, WimlibDirCallback cb, IntPtr ctx);
+
+        const int WIMLIB_ITERATE_DIR_TREE_FLAG_CHILDREN = 0x00000002;
+
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
         static extern IntPtr wimlib_get_error_string(int code);
 
@@ -164,18 +173,62 @@ namespace UupDumpFetcher
             }
         }
 
+        // Lists the immediate children (files and directories) of the root of
+        // one image of a WIM, as names only - reads image metadata, extracts
+        // nothing. Layout of struct wimlib_dir_entry per wimlib.h: filename,
+        // dos_name, full_path (three wimlib_tchar pointers) lead the struct.
+        public static List<string> ListRootNames(string wimPath, int image)
+        {
+            EnsureLoaded();
+            IntPtr wim = IntPtr.Zero;
+            try
+            {
+                Check(wimlib_open_wim(wimPath, 0, out wim),
+                    "wimlib_open_wim on " + Path.GetFileName(wimPath));
+                List<string> names = new List<string>();
+                WimlibDirCallback cb = delegate(IntPtr dentry, IntPtr ctx)
+                {
+                    string nm = Marshal.PtrToStringUni(Marshal.ReadIntPtr(dentry, 0));
+                    if (nm != null) names.Add(nm);
+                    return 0;
+                };
+                Check(wimlib_iterate_dir_tree(wim, image, "\\",
+                    WIMLIB_ITERATE_DIR_TREE_FLAG_CHILDREN, cb, IntPtr.Zero),
+                    "wimlib_iterate_dir_tree on " + Path.GetFileName(wimPath));
+                GC.KeepAlive(cb);
+                return names;
+            }
+            finally
+            {
+                if (wim != IntPtr.Zero) wimlib_free(wim);
+            }
+        }
+
         public static void Capture(string sourceDir, string destEsd, string imageName,
             Action<string> log, ManualResetEvent stopEvent)
         {
+            Capture(sourceDir, destEsd, imageName, WIMLIB_COMPRESSION_TYPE_LZMS, true,
+                "Creating ESD", log, stopEvent);
+        }
+
+        // Generic capture. Solid (packed) output is only meaningful for LZMS;
+        // an uncompressed standard WIM (what a .msu is) passes
+        // compression 0 / solid false.
+        public static void Capture(string sourceDir, string destFile, string imageName,
+            int compression, bool solid, string label,
+            Action<string> log, ManualResetEvent stopEvent)
+        {
             EnsureLoaded();
+            string destEsd = destFile;
 
             IntPtr wim = IntPtr.Zero;
             try
             {
-                Check(wimlib_create_new_wim(WIMLIB_COMPRESSION_TYPE_LZMS, out wim),
+                Check(wimlib_create_new_wim(compression, out wim),
                     "wimlib_create_new_wim");
-                Check(wimlib_set_output_pack_compression_type(wim, WIMLIB_COMPRESSION_TYPE_LZMS),
-                    "wimlib_set_output_pack_compression_type");
+                if (solid)
+                    Check(wimlib_set_output_pack_compression_type(wim, compression),
+                        "wimlib_set_output_pack_compression_type");
 
                 DateTime start = DateTime.UtcNow;
                 int lastLoggedPct = -1;
@@ -217,7 +270,7 @@ namespace UupDumpFetcher
                                         double elapsed = (DateTime.UtcNow - start).TotalSeconds + 1e-9;
                                         double speed = ws.CompletedBytes / 1048576.0 / elapsed;
                                         if (log != null)
-                                            log(string.Format("Creating ESD: {0}% ({1}/{2} MB, {3:F1} MB/s)",
+                                            log(string.Format(label + ": {0}% ({1}/{2} MB, {3:F1} MB/s)",
                                                 pct, ws.CompletedBytes / 1048576, ws.TotalBytes / 1048576, speed));
                                     }
                                 }
@@ -245,7 +298,7 @@ namespace UupDumpFetcher
                 if (stopEvent != null && stopEvent.WaitOne(0))
                     throw new OperationCanceledException("Stopped by user.");
 
-                Check(wimlib_write(wim, destEsd, WIMLIB_ALL_IMAGES, WIMLIB_WRITE_FLAG_SOLID,
+                Check(wimlib_write(wim, destEsd, WIMLIB_ALL_IMAGES, solid ? WIMLIB_WRITE_FLAG_SOLID : 0,
                     (uint)Math.Max(1, Environment.ProcessorCount)), "wimlib_write");
 
                 GC.KeepAlive(callback);
