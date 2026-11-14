@@ -317,7 +317,16 @@ namespace UupDumpFetcher
                     {
                         string url = BaseUrl + "/known.php?q=category%3A" + cat[0];
                         string html = Net.FetchText(url, 3, log);
-                        scraped = HtmlParser.ParseKnownBuilds(html);
+                        // Unfiltered on purpose: ParseKnownBuilds drops every row whose
+                        // name contains "Preview"/"Cumulative"/"Feature", which is exactly
+                        // how optional Preview CUs (e.g. 28000.3612, "Preview Update for
+                        // Windows 11") were invisible to this cross-check. Only .NET
+                        // Framework rows are still dropped; the family filter below and
+                        // WuClient.DiscoverExact resolve the real OS update from there.
+                        scraped = HtmlParser.ParseKnownBuildsUnfiltered(html);
+                        scraped.RemoveAll(delegate(BuildInfo x) {
+                            return x.Name.IndexOf("Framework", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                   x.Name.IndexOf("CPC OS", StringComparison.OrdinalIgnoreCase) >= 0; });
                         foreach (BuildInfo sb in scraped)
                         {
                             sb.Branch = cat[1];
