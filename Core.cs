@@ -370,8 +370,11 @@ namespace UupDumpFetcher
         public static bool   RunProcessor       = false;
         public static bool   SkipUpload         = false;
         // Which Windows 11 branches to scan (all enabled by default)
+        // Drop the WindowsWorkload AI msix payloads from rebuilt MUMX v2 MSUs.
+        // Off by default: those payloads are required on NPU hardware.
+        public static bool   StripAiPayloads    = false;
         public static bool   Branch26H2         = true;
-        public static bool   Branch26H1         = true;
+        public static bool   Branch26H1        = true;
         public static bool   Branch23H2         = true;
         public static string UserAgent          =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
@@ -401,7 +404,8 @@ namespace UupDumpFetcher
                         case "monitor_mode":         MonitorMode        = v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
                         case "run_processor":        RunProcessor       = v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
                         case "skip_upload":          SkipUpload         = v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
-                        case "branch_26h2":          Branch26H2         = v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
+                        case "strip_ai_payloads":    StripAiPayloads    = v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
+                        case "branch_26h2":        Branch26H2         = v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
                         case "branch_26h1":          Branch26H1         = v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
                         case "branch_23h2":          Branch23H2         = v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
                         case "user_agent":           if (v.Length > 0) UserAgent = v; break;
@@ -421,6 +425,7 @@ namespace UupDumpFetcher
             sb.AppendLine("monitor_mode = "         + MonitorMode.ToString().ToLower());
             sb.AppendLine("run_processor = "        + RunProcessor.ToString().ToLower());
             sb.AppendLine("skip_upload = "          + SkipUpload.ToString().ToLower());
+            sb.AppendLine("strip_ai_payloads = "    + StripAiPayloads.ToString().ToLower());
             sb.AppendLine("branch_26h2 = "          + Branch26H2.ToString().ToLower());
             sb.AppendLine("branch_26h1 = "          + Branch26H1.ToString().ToLower());
             sb.AppendLine("branch_23h2 = "          + Branch23H2.ToString().ToLower());

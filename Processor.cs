@@ -279,7 +279,8 @@ namespace UupDumpFetcher
             if (noCat == 0) return false;
             if (log != null)
                 log(string.Format("MUMX v2 update detected ({0} of {1} .mum files have no .cat): " +
-                    "ESD conversion is not possible, rebuilding the MSU without AI payloads instead.",
+                    "ESD conversion is not possible, rebuilding the MSU (AI payloads " +
+                    (AppConfig.StripAiPayloads ? "stripped" : "kept") + ") instead.",
                     noCat, mums.Count));
             return true;
         }
@@ -287,7 +288,8 @@ namespace UupDumpFetcher
         // The AI components shipped as msix payloads (plus their .rif.cab).
         static bool IsAiPayload(string name)
         {
-            if (!name.StartsWith("WindowsWorkload.", StringComparison.OrdinalIgnoreCase))
+            if (!AppConfig.StripAiPayloads) return false;
+            if (!name.StartsWith("WindowsWorkload.",StringComparison.OrdinalIgnoreCase))
                 return false;
             return name.EndsWith(".msix", StringComparison.OrdinalIgnoreCase) ||
                    name.EndsWith(".msix.rif.cab", StringComparison.OrdinalIgnoreCase);
